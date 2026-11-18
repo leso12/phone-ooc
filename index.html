@@ -2262,7 +2262,7 @@ function phClassify(lines,year,hint){
   const pipe=/[|｜]/.test(t);const cells=(pipe?phCells(t):t.split(/\s+[\/／]\s+/)).filter(Boolean);const n=cells.length;
   const hasDT=/\d{1,2}:\d{2}|\d{1,2}\s*[-./월]\s*\d{1,2}|하루\s*종일/.test(t);
   if(n>=2&&/(?:^|[|｜/\s])(?:발신|수신|부재중)(?:$|[|｜/\s])/.test(t))return 'calls';
-  if(/하루\s*종일/.test(t)||cells.some(c=>/^[★☆]/.test(c))||(hint==='캘린더'&&hasDT&&n>=2))return 'cal';
+  if((/하루\s*종일/.test(t)&&(pipe||/\d{1,2}:\d{2}|\d{1,2}\s*[-./월]\s*\d{1,2}/.test(t)))||cells.some(c=>/^[★☆]/.test(c))||(hint==='캘린더'&&hasDT&&n>=2))return 'cal';
   if(n>=3&&hasDT)return 'chat';
   if(n===2&&hasDT)return /_PC$/.test(hint||'')?'self':isChatHint?'chat':'search';
   if(n>=2&&pipe&&!hasDT)return isChatHint?'':'contacts';
@@ -3429,6 +3429,75 @@ function phNopInit(){const dev=$('#device');if(!dev||dev.__nop)return;dev.__nop=
  dev.addEventListener('pointerdown',e=>{if(e.target.closest('#app .lk-sc'))e.stopImmediatePropagation()},true);
 }
 {const _gi=phGestureInit;phGestureInit=function(){_gi();phNopInit()}}
+
+/* ===== v72: 답변 인식 보강 — AI가 형식을 조금 바꿔 써도 읽히게 정리 ===== */
+const PH_HK=new RegExp(`^(?:${PH_KINDS})(?:\\s*(?:목록|내역|앱|함|방|기록))?$`);
+const PH_DT_START=/^(?:(?:\d{4}[-./]\s?\d{1,2}[-./]\s?\d{1,2}\.?|\d{1,2}[-/]\d{1,2}|\d{1,2}월\s*\d{1,2}일)\s*(?:[(（][^)）]{1,4}[)）]|[월화수목금토일]요일)?\s*)?(?:(?:오전|오후|AM|PM)\s*)?\d{1,2}:\d{2}/i;
+function phHdrNorm(line){
+ if(/[|｜]/.test(line))return null;
+ let s=line.replace(/\*\*|__/g,'').trim();if(!s||s.length>60)return null;
+ if(PH_SECTION.test(s))return null; /* 이미 읽히는 모양 */
+ s=s.replace(/^#{1,6}\s*/,'').replace(/^\d{1,2}\s*[.)]\s+/,'').replace(/^[^\p{L}\p{N}\[【<〈《(（]+/u,'').trim();
+ const br=s.match(/^[\[【<〈《]\s*(.+?)\s*[\]】>〉》]\s*(.*)$/);let inner=br?br[1]:s,after=br?br[2].trim():'';
+ inner=inner.replace(/\s*[:：]\s*$/,'').trim();
+ let m;
+ /* 카톡 방 머리줄 */
+ if((m=inner.match(/^(?:카카오톡|카톡|단톡방?|채팅방?|대화방)(?:\s*(?:대화방|채팅방?|방|대화))?\s*[:：\-–—·]\s*(.{1,40})$/))&&!after)return `[카톡: ${m[1].trim()}]`;
+ if((m=inner.match(/^(.{1,30}?)\s*[(（]\s*(?:카톡|카카오톡|단톡방?|대화방|채팅방?)\s*[)）]$/))&&!after)return `[카톡: ${m[1].trim()}]`;
+ if((m=inner.match(/^(.{1,30}?)\s*(?:님)?(?:과|와)(?:의)?\s*(?:카톡|카카오톡)(?:\s*대화)?(?:\s*방)?$/))&&!after)return `[카톡: ${m[1].trim()}]`;
+ if(br&&after&&/^(?:카톡|카카오톡|단톡방?|대화방|채팅방?)$/.test(inner)&&after.length<=40)return `[카톡: ${after}]`;
+ /* 기종: 모델 */
+ if((m=inner.match(/^(?:휴대폰\s*)?기종\s*[:：]\s*(.{1,40})$/)))return `[기종: ${m[1].trim()}]`;
+ /* 이름만 있는 머리줄 (+개수 표시) */
+ const key=inner.replace(/\s*[(（]\s*(?:총\s*)?\d+\s*(?:개|명|건|통|일|줄)?\s*[)）]$/,'').replace(/\s*[-–—]\s*\d{1,2}\s*월$|\s*[(（]\s*\d{1,2}\s*월\s*[)）]$/,'').trim();
+ if(PH_HK.test(key)&&(!after||br))return `[${key}]${after?' '+after:''}`;
+ return null;
+}
+function phNormalize(text){
+ const year=Number((String(text).match(/(\d{4})\s*[-.년]\s*\d{1,2}/)||[])[1]||new Date().getFullYear());
+ const L=String(text||'').replace(/\r\n?/g,'\n').replace(/[   ]/g,' ').replace(/[​-‍﻿]/g,'').replace(/<br\s*\/?>/gi,'\n').replace(/<\/?(?:p|div|span|b|strong|i|em|u|small|code|pre)(?:\s[^>]*)?>/gi,'').split('\n');
+ const out=[];let kind='';
+ for(let i=0;i<L.length;i++){
+  let l=L[i].replace(/^\s*>\s?/,'').replace(/\s+$/,'');
+  /* 마크다운 표: 구분선과 그 위 머리행 버리기 */
+  if(/^\s*[|｜]?\s*:?-{2,}:?\s*(?:[|｜]\s*:?-{2,}:?\s*)*[|｜]?\s*$/.test(l)&&/[|｜]/.test(l)){{let j=out.length-1;while(j>=0&&!out[j].trim())j--;if(j>=0&&/[|｜]/.test(out[j]))out.splice(j)}continue}
+  /* 끝맺음 표시 */
+  if(/^\s*[(（]?\s*(?:끝|이상|END|완료|이상입니다)\s*\.?\s*[)）]?\s*$/i.test(l))continue;
+  if(/^\s*\*[^*|｜]([^*|｜]*[^*|｜])?\*\s*$/.test(l)&&!/^\s*\*\s/.test(l))continue;
+  {const t=l.trim();if(t&&!/[|｜]/.test(t)&&['contacts','calls','search','cal','profile','home','device'].includes(kind)&&/\s/.test(t)&&!/[\/／:：]|\s[-–—]\s/.test(t)&&/(?:[.!?…。]|다|요)["”'’)）]?$/.test(t)&&!phDateHeader(t,year)){out.push('[OOC]');kind=''}}
+  const h=phHdrNorm(l);
+  if(h){out.push(h);const k=h.match(/^\[([^\]:]+)/);kind=k?phKind(k[1]):'';continue}
+  {const mm=l.replace(/\*\*|__/g,'').trim().match(PH_SECTION);if(mm){kind=phKind(mm[1]);out.push(l);continue}}
+  if(/[|｜]/.test(l)){
+   l=l.replace(/^\s*[|｜]\s*/,'').replace(/\s*[|｜]\s*$/,'');
+   l=l.replace(/^\s*(?:[-•·▪◦▸►*]|\d{1,2}[.)])\s+/,'');
+   if(!/^■/.test(l.trim()))l=l.replace(/\*\*([^*]+)\*\*/g,'$1');
+   {l=l.trim();const dm=l.match(PH_DT_START);if(dm&&dm.index===0&&/^\s*[-–—]\s+/.test(l.slice(dm[0].length)))l=dm[0]+' | '+l.slice(dm[0].length).replace(/^\s*[-–—]\s+/,'')}
+  }else{
+   const t=l.trim();
+   /* 날짜/시간으로 시작하는데 / 나 - 로 나눈 줄 → | 로 */
+   const dm=t.replace(/^\s*(?:[-•·▪◦▸►]|\d{1,2}[.)])\s+/,'').match(PH_DT_START);
+   if(dm&&dm.index===0){const body=t.replace(/^\s*(?:[-•·▪◦▸►]|\d{1,2}[.)])\s+/,'');const rest=body.slice(dm[0].length);
+    if(/\s[\/／]\s/.test(rest))l=dm[0]+' | '+rest.replace(/^\s*[\/／]\s*/,'').split(/\s+[\/／]\s+/).join(' | ');
+    else if(/^\s*[-–—]\s+/.test(rest)&&kind!=='memo')l=dm[0]+' | '+rest.replace(/^\s*[-–—]\s+/,'');}
+   /* 이름: 내용 (날짜 시간) → 날짜 시간 | 이름 | 내용 */
+   else if(kind==='chat'||kind===''){const m=t.match(/^([^:：|]{1,24}?)\s*[:：]\s*(.+?)\s*[(（]\s*((?:\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}[-/]\d{1,2})?\s*(?:[(（][^)）]{1,4}[)）])?\s*(?:(?:오전|오후)\s*)?\d{1,2}:\d{2})\s*[)）]$/);if(m)l=`${m[3]} | ${m[1].replace(/\*\*/g,'').trim()} | ${m[2]}`}
+   /* 이모지를 붙인 날짜 줄 */
+   if(t.length<=34&&/^[^\p{L}\p{N}\[【]+\s*\d/u.test(t)){const s2=t.replace(/^[^\p{L}\p{N}]+/u,'');if(!/[|｜]/.test(s2)&&phDateHeader(s2,year))l=s2}
+  }
+  /* 26.11.09 같은 두 자리 연도 */
+  l=l.replace(/(^|[\s|｜(（])(\d{2})\.(\d{1,2})\.(\d{1,2})(?=[\s(（|｜.]|$)/g,(a,p,y,mo,d)=>`${p}20${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`);
+  out.push(l);
+ }
+ return out.join('\n');
+}
+function phHintHeaders(t,hint){
+ const L=t.split('\n');if(L.some(l=>PH_SECTION.test(l.replace(/\*\*|__/g,'').trim())))return t;
+ if(hint==='홈_프로필'){let cur='',o=[];for(const l of L){if(/[|｜]/.test(l)){const c=phCells(l)[0]||'';const k=/^(?:나|본인)$/.test(c)||phIsOwner(c)?'[카톡 프로필]':(/배경\s*화면|배경화면|잠금\s*화면/.test(c)||wgKind(c)!=='other')?'[홈 화면]':'[카톡 프로필]';if(k!==cur){o.push(k);cur=k}}o.push(l)}return o.join('\n')}
+ if(hint==='캘린더'&&L.some(l=>/[|｜]/.test(l)))return '[캘린더]\n'+t;
+ return t;
+}
+{const _pp=parsePhone;parsePhone=function(text,hint){return _pp(phHintHeaders(phNormalize(text),hint),hint)}}
 
 /* ---------- OOC 탭 ---------- */
 const OOCS_FULL=OOCS.slice(),OOCS_SIMPLE=[OOCS_FULL[0],{label:'② 연락처·통화·일정',file:'폰기본',text:OOC_SIMPLE[0]},{label:'③ 카톡·메모·검색',file:'카톡_간단',text:OOC_SIMPLE[1]}];
