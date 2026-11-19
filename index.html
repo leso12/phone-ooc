@@ -1219,6 +1219,20 @@ mark.tk-hit{background:#ffe066;color:inherit;border-radius:3px;padding:0 1px}mar
 /* v71: 폰 안에는 스크롤바 숨김 */
 #device,#device *,#sheetLayer,#sheetLayer *{scrollbar-width:none!important;-ms-overflow-style:none}
 #device ::-webkit-scrollbar,#device::-webkit-scrollbar,#sheetLayer ::-webkit-scrollbar{display:none!important;width:0!important;height:0!important}
+
+/* v73 */
+.undo-btn{display:block;margin:8px auto 0;font-size:12.5px}
+.cont-box{margin-top:10px;border-radius:12px;padding:12px 14px;background:#fff6e9;border:1px solid #ffd9a8}
+.cont-box .cont-t{font-weight:800;font-size:13px;color:#b25d00}
+.cont-box p{font-size:12px;color:#7a5a33;margin:6px 0;line-height:1.6;overflow-wrap:anywhere}
+.cont-box q{color:#5b3b12;font-weight:600}
+.cont-box pre{white-space:pre-wrap;font-size:11.5px;line-height:1.6;background:#fff;border-radius:8px;padding:9px 10px;margin:8px 0;color:#3b3b3b;max-height:160px;overflow:auto}
+.cont-acts{display:flex;align-items:center;gap:12px}.cont-acts .btn{padding:9px 14px;font-size:13px}
+.cont-box small{display:block;margin-top:7px;font-size:11px;color:#9a7a55}
+.inspect .unread{margin-top:8px;padding-top:8px;border-top:1px dashed #d5dde8}
+.inspect .unread b{font-size:12px;color:#c0392b}
+.inspect .unread ol{color:#6b5050}
+.inspect .read-sum{color:#2f5d8a!important;font-weight:600}
 </style>
 </head>
 <body>
@@ -3498,6 +3512,124 @@ function phHintHeaders(t,hint){
  return t;
 }
 {const _pp=parsePhone;parsePhone=function(text,hint){return _pp(phHintHeaders(phNormalize(text),hint),hint)}}
+
+/* ===== v73: 못 읽은 줄 보기 · 끊긴 답변 알림·이어 쓰기 · 되돌리기 ===== */
+let phUndoStack=[];window.__phAppend=false;
+/* 읽기 직전·직후 정보 남기기 */
+{const _pp=parsePhone;parsePhone=function(text,hint){
+ const norm=phHintHeaders(phNormalize(text),hint);
+ const tr=phTruncCheck(text,norm,hint);
+ let use=norm;if(tr&&tr.dropLast){const L=norm.split('\n');for(let i=L.length-1;i>=0;i--){if(L[i].trim()){L.splice(i,1);break}}use=L.join('\n')}
+ const out=_pp(use,hint);window.__lastParse={raw:text,norm:use,res:out.res,trunc:tr,hint};return out}}
+/* 이어서 붙인 답은 연락처·통화 등을 덮어쓰지 않고 뒤에 이어 붙이기 */
+{const _m=phMerge;phMerge=function(res){
+ if(window.__phAppend){const key=x=>JSON.stringify([x.name,x.date||'',x.time||'',x.title||'',x.q||x.query||'',x.body||'',x.text||'',x.type||'']);
+  for(const k of ['contacts','calls','memos','searches','events'])if(res[k]&&res[k].length&&P[k]&&P[k].length){const seen=new Set(P[k].map(key));res[k]=[...P[k],...res[k].filter(x=>!seen.has(key(x)))]}}
+ return _m(res)}}
+{const _pt=parseText;parseText=function(t){const r=_pt(t);
+ if(window.__phAppend&&bankLoaded&&!demo&&D&&D.transactions&&D.transactions.length&&r&&r.transactions){const old=phSnapshot().data;const k=x=>[x.date,x.merchant,x.amount,x.type].join('|');const seen=new Set(old.transactions.map(k));old.transactions=[...old.transactions,...r.transactions.filter(x=>!seen.has(k(x)))];for(const f of ['final_balance','total_income','total_expense'])if(r[f]!=null)old[f]=r[f];return old}
+ return r}}
+/* 끊긴 답변 찾기 */
+function phTruncCheck(raw,norm,hint){
+ const r=String(raw||'').trim();if(!r)return null;
+ const L=norm.split('\n').map(x=>x.trim()).filter(x=>x&&!/^```/.test(x)&&x!=='[OOC]');if(!L.length)return null;
+ const last=L[L.length-1];let hdr='',hi=-1;for(let i=L.length-1;i>=0;i--){if(PH_SECTION.test(L[i].replace(/\*\*/g,''))){hdr=L[i];hi=i;break}}
+ const kind=hdr?phKind((hdr.match(PH_SECTION)||[])[1]||''):'';
+ const why=[];let dropLast=false;
+ if(((r.match(/```/g)||[]).length)%2===1)why.push('코드 상자가 닫히지 않았어요');
+ {const rl=r.split('\n').map(x=>x.trim()).filter(x=>x&&!/^```/.test(x));const lr=rl[rl.length-1]||'';if(kind==='chat'&&/[|｜]$/.test(lr)&&!/^[|｜]/.test(lr)&&/[|｜]/.test(last)){why.push('마지막 줄이 칸 중간에서 끝났어요');dropLast=true}}
+ if(!dropLast&&kind==='chat'&&/[|｜]/.test(last)){const rows=L.slice(hi+1).filter(l=>/[|｜]/.test(l));const n=phCells(last).length;const full=rows.filter(l=>phCells(l).length>=3).length;if(rows.length>=3&&full>=rows.length-1&&n<3){why.push('마지막 메시지가 중간에 끊겼어요');dropLast=true}}
+ if(!dropLast){const o=(last.match(/[(（\[“"]/g)||[]).length,c=(last.match(/[)）\]”"]/g)||[]).length;if(o>c&&!/[“"]/.test(last)){why.push('마지막 줄의 괄호가 닫히지 않았어요');dropLast=true}}
+ if(hi===L.length-1&&L.length>1)why.push(`${hdr} 제목만 있고 내용이 없어요`);
+ /* 나와야 할 칸이 빠졌는지 */
+ const has=re=>L.some(l=>re.test(l));const miss=[];
+ if(has(/^날짜\s*[|｜]\s*거래처/)&&L.filter(l=>/^\d{4}-\d{2}-\d{2}/.test(l)).length&&!has(/최종\s*잔액|총\s*지출/))miss.push('총수입·총지출·최종 잔액');
+ if(hint==='연락처_통화'&&has(/^\[연락처/)&&!has(/^\[통화/))miss.push('[통화 기록]');
+ if(hint==='메모_검색'&&has(/^\[메모/)&&!has(/^\[검색/))miss.push('[검색 기록]');
+ if(miss.length)why.push(`빠진 부분: ${miss.join(', ')}`);
+ if(!why.length)return null;
+ const shown=dropLast?last:'';const prevLine=dropLast?(L[L.length-2]||''):last;
+ return {why,hdr,last:shown,prev:prevLine,miss,dropLast};
+}
+function phContOoc(t){
+ const cut=s=>{s=String(s||'').replace(/\s+/g,' ').trim();return s.length>40?s.slice(0,40)+'…':s};
+ const a=['(OOC: 직전 답변이 중간에 끊겼다. 끊긴 부분부터 이어서 끝까지 출력한다.'];
+ const bank=t.miss.some(m=>/최종\s*잔액/.test(m));
+ const head=t.hdr?`먼저 ${t.hdr} 제목 줄을 다시 쓰고, `:bank?'먼저 표 머리줄(날짜 | 거래처 | 구매 내역 | 입출금액 | 거래 후 잔액 | 메모)을 다시 쓰고, ':'';
+ if(t.dropLast)a.push(`${head}「${cut(t.last)}」 줄부터 같은 형식으로 다시 이어 쓴다.`);
+ else if(t.prev)a.push(`${head}「${cut(t.prev)}」 다음 줄부터 같은 형식으로 이어 쓴다.`);
+ if(t.miss.length)a.push(`아직 쓰지 않은 ${t.miss.join(', ')}도 같은 형식으로 출력한다.`);
+ a.push('이미 쓴 줄은 반복하지 않는다. 롤플레이 서술 없이 기록만 출력한다.)');
+ return a.join('\n');
+}
+/* 못 읽은 줄 찾기 */
+function phUnreadLines(lp){
+ if(!lp)return [];
+ const clean=s=>String(s||'').replace(/\\[nrt"]/g,'').replace(/[\s"'“”‘’.,!?~…·*_`()（）\[\]【】<>:：;\-–—/|｜■□▪●○◆◇★☆♥♡]/g,'').toLowerCase();
+ let hay=JSON.stringify(lp.res||{});if(bankLoaded&&!demo&&D&&D.transactions)hay+=JSON.stringify(D.transactions)+JSON.stringify([D.npc_name,D.period_start,D.period_end]);
+ hay=clean(hay);
+ const skip=/^(?:NPC|기간|화폐|시작\s*잔액|결제\s*수단|보유\s*결제\s*수단|총\s*수입|총\s*지출|최종\s*잔액|휴대폰\s*기종|기종|이름)\s*[:：]|^날짜\s*[|｜]\s*거래처|^\[OOC|^```|^[-=*_━─]{3,}$|여기까지\s*읽었습니다|^\(?\s*OOC/i;
+ const out=[];
+ for(const raw of String(lp.norm||'').split('\n')){
+  const l=raw.trim();if(!l||skip.test(l))continue;
+  if(PH_SECTION.test(l.replace(/\*\*|__/g,'')))continue;
+  if(phDateHeader(l.replace(/^[^\p{L}\p{N}]+/u,''),new Date().getFullYear()))continue;
+  if(/[|｜]/.test(l)&&typeof PH_HDR!=='undefined'&&PH_HDR.test(l))continue;
+  const cells=(/[|｜]/.test(l)?phCells(l):[l]).map(c=>c.replace(/\[\s*\d+\s*\]|\[\s*안\s*읽음\s*\]|[(（]\s*안\s*읽음\s*[)）]/g,'').replace(/\d{4}[-./]\d{1,2}[-./]\d{1,2}(\([^)]*\))?|\d{1,2}\/\d{1,2}|(?:오전|오후)?\s*\d{1,2}:\d{2}|\d{1,2}월\s*\d{1,2}일/g,'')).map(clean).filter(c=>c.length>=2&&!/^\d+$/.test(c));
+  if(!cells.length)continue;
+  if(cells.some(c=>hay.includes(c)))continue;
+  out.push(l);
+ }
+ return out;
+}
+/* 되돌리기 */
+function phPushUndo(){try{phUndoStack.push({s:JSON.stringify(phSnapshot()),text:$('#jsonInput').value,ap:window.__phAppend,cont:window.__phCont||null});if(phUndoStack.length>8)phUndoStack.shift()}catch(e){}}
+function phUndo(){const u=phUndoStack.pop();if(!u){feedback('되돌릴 기록이 없어요.',true);return}
+ const x=JSON.parse(u.s);D=normalize(x.data);demo=!!x.demo;hiddenBalance=!!x.hiddenBalance;P=phClean(x.phone);bankLoaded=x.bankLoaded!==false;demoPhone=!!x.demoPhone;
+ window.__phAppend=u.ap;window.__phCont=u.cont;tab='home';cardSelected='';cardFilter='';phoneApp='home';talkRoom=-1;memoOpen=-1;
+ $('#jsonInput').value=u.text||'';render();photoList();phChips();refreshOoc();phSave();phContBox();
+ $('#readInspector').classList.add('hidden');feedback('방금 불러온 것을 되돌렸어요. 붙여넣었던 답변은 입력 칸에 다시 넣어 뒀어요.');phUndoBtn()}
+function phUndoBtn(){let b=$('#undoBtn');if(!b){b=document.createElement('button');b.type='button';b.id='undoBtn';b.className='link-btn undo-btn';b.textContent='↶ 방금 불러온 것 되돌리기';b.onclick=phUndo;$('#buildBtn').insertAdjacentElement('afterend',b)}b.classList.toggle('hidden',!phUndoStack.length)}
+/* 이어 쓰기 상자 */
+function phContBox(){let box=$('#contBox');const t=window.__phCont;
+ if(!box){box=document.createElement('div');box.id='contBox';box.className='cont-box hidden';$('#feedback').insertAdjacentElement('afterend',box)}
+ if(!t){box.classList.add('hidden');box.innerHTML='';return}
+ box.classList.remove('hidden');
+ box.innerHTML=`<div class="cont-t">✂ 답변이 끊긴 것 같아요</div><p>${t.why.map(safe).join(' · ')}</p>${t.dropLast?`<p class="cont-last">끊긴 줄은 빼고 불러왔어요: <q>${safe(t.last)}</q></p>`:''}<pre id="contOoc">${safe(phContOoc(t))}</pre><div class="cont-acts"><button type="button" class="btn btn-primary" id="contCopy">이어 쓰기 OOC 복사</button><button type="button" class="link-btn" id="contOff">괜찮아요</button></div><small>이 OOC로 받은 답을 붙여넣으면 지금 기록 뒤에 이어 붙여요.</small>`;
+ $('#contCopy').onclick=async()=>{const s=phContOoc(t);try{await navigator.clipboard.writeText(s)}catch(e){const ta=document.createElement('textarea');ta.value=s;document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(_){}ta.remove()}$('#contCopy').textContent='복사했어요 ✓';window.__phAppend=true;setTimeout(()=>{const b=$('#contCopy');if(b)b.textContent='이어 쓰기 OOC 복사'},1800)};
+ $('#contOff').onclick=()=>{window.__phCont=null;window.__phAppend=false;phContBox()};
+}
+/* 불러오기 감싸기 */
+{const _b=phBuild;phBuild=function(){
+ const text=$('#jsonInput').value;if(!text.trim())return _b();
+ phPushUndo();const wasAppend=window.__phAppend;window.__lastParse=null;
+ const fbBefore=$('#feedback').textContent;
+ _b();
+ const lp=window.__lastParse;const fb=$('#feedback');
+ if(!lp||fb.classList.contains('error')&&$('#jsonInput').value){phUndoStack.pop();phUndoBtn();return}
+ window.__phAppend=false;
+ const unread=phUnreadLines(lp);const t=lp.trunc;window.__phCont=t||null;
+ let extra='';
+ if(wasAppend)extra+='\n↪ 이어 쓴 답이라 기존 기록 뒤에 이어 붙였어요.';
+ if(t)extra+=`\n✂ 답변이 끊긴 것 같아요 — 아래에서 이어 쓰기 OOC를 복사할 수 있어요.`;
+ if(unread.length)extra+=`\n🔎 못 읽은 줄 ${unread.length}개 — 아래 '읽어낸 것 확인'에서 볼 수 있어요.`;
+ fb.textContent+=extra;
+ /* 확인 상자 */
+ const insp=$('#readInspector'),ct=$('#inspectorContent');
+ const had=!insp.classList.contains('hidden');
+ const sum=insp.querySelector('summary');
+ const ub=unread.length?`<div class="unread"><b>못 읽은 줄 ${unread.length}개</b><p>롤플레이 서술이거나 형식이 달라서 휴대폰에 넣지 않은 줄이에요. 필요한 기록이면 형식을 고쳐서 다시 붙여넣어 주세요.</p><ol>${unread.slice(0,60).map(l=>`<li>${safe(l)}</li>`).join('')}</ol>${unread.length>60?`<p>…외 ${unread.length-60}줄</p>`:''}</div>`:'';
+ const okb=`<p class="read-sum">읽은 것: ${safe(phReadCounts(lp.res))}</p>`;
+ ct.innerHTML=okb+ub+(had?ct.innerHTML:'');
+ if(sum)sum.textContent=unread.length?`읽어낸 것 확인 · 못 읽은 줄 ${unread.length}개`:'읽어낸 것 확인';
+ insp.classList.remove('hidden');insp.open=!!unread.length;
+ phContBox();phUndoBtn();
+}}
+function phReadCounts(res){const a=[];if(bankLoaded&&!demo&&window.__lastParse&&/거래처|잔액/.test(window.__lastParse.norm))a.push(`통장 ${D.transactions.length}건`);
+ if(res.device)a.push(`기종 ${res.device}`);if(res.contacts?.length)a.push(`연락처 ${res.contacts.length}명`);if(res.calls?.length)a.push(`통화 ${res.calls.length}건`);
+ if(res.chats?.length)a.push(`카톡 ${res.chats.length}방 ${res.chats.reduce((n,c)=>n+c.messages.length,0)}개`);if(res.memos?.length)a.push(`메모 ${res.memos.length}개`);if(res.searches?.length)a.push(`검색 ${res.searches.length}개`);
+ if(res.events?.length)a.push(`일정 ${res.events.length}개`);if(res.home?.widgets?.length)a.push(`위젯 ${res.home.widgets.length}개`);if(res.profiles&&Object.keys(res.profiles).length)a.push(`상태메시지 ${Object.keys(res.profiles).length}명`);
+ return a.join(' · ')||'없음'}
 
 /* ---------- OOC 탭 ---------- */
 const OOCS_FULL=OOCS.slice(),OOCS_SIMPLE=[OOCS_FULL[0],{label:'② 연락처·통화·일정',file:'폰기본',text:OOC_SIMPLE[0]},{label:'③ 카톡·메모·검색',file:'카톡_간단',text:OOC_SIMPLE[1]}];
